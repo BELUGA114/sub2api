@@ -1668,14 +1668,14 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// （codex-api/src/endpoint/compact.rs 从响应头捕获），显式回传。
 	s.relayOpenAICodexTurnState(c, account, resp.Header)
 
-	contentType := "application/json"
-	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
-		if upstreamType := resp.Header.Get("Content-Type"); upstreamType != "" {
-			contentType = upstreamType
-		}
-	}
+	// body 已按 JSON 校验（usage 提取成功）。上游 Content-Type 经
+	// WriteFilteredHeaders 预写后，c.Data 的 writeContentType 无法覆盖
+	// 已存在的头，非 JSON 标签（如 text/plain）必须显式 Set 修正为 JSON
+	// 语义，避免客户端 SDK 因 Content-Type 不做 JSON 解析。
+	contentType := jsonContentTypeOrDefault(resp.Header.Get("Content-Type"))
 
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
+		c.Writer.Header().Set("Content-Type", contentType)
 		c.Data(resp.StatusCode, contentType, body)
 	}
 
@@ -1783,6 +1783,12 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		}
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
+		if ok {
+			// 提取出的最终响应是本地合成的 JSON：WriteFilteredHeaders 预写的
+			// 上游 SSE 头无法被 c.Data 覆盖，显式 Set 回 JSON。!ok 时 body 为
+			// 原样透传的 SSE 文本，保持上游 Content-Type 不变。
+			c.Writer.Header().Set("Content-Type", contentType)
+		}
 		c.Data(resp.StatusCode, contentType, body)
 	}
 

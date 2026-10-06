@@ -167,6 +167,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
+	// 非流式转换响应必须是 application/json：上游可能给 JSON 体贴 text/plain
+	// 标签，经 WriteFilteredHeaders 预写后 c.JSON 无法覆盖，客户端 SDK 会因
+	// Content-Type 不做 JSON 解析。显式 Set。
+	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.JSON(http.StatusOK, responsesResp)
 
 	return &OpenAIForwardResult{

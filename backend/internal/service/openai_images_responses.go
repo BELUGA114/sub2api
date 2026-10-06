@@ -1389,6 +1389,10 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 		return OpenAIUsage{}, 0, nil, err
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	// responseBody 为本地构建的 JSON；上游 Content-Type（SSE 场景为
+	// text/event-stream）经 WriteFilteredHeaders 预写后，c.Data 的
+	// writeContentType 无法覆盖已存在的头，显式 Set 回 JSON。
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	c.Data(resp.StatusCode, "application/json; charset=utf-8", responseBody)
 	return usage, len(results), openAIResponsesImageResultSizes(results), nil
 }

@@ -12,7 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -172,6 +174,45 @@ func TestForwardAsAnthropic_ForceChatCompletionsNonStreaming(t *testing.T) {
 	require.Nil(t, result.ServiceTier)
 	require.Equal(t, "priority", result.UpstreamResponseServiceTier)
 	require.False(t, result.Stream)
+}
+
+// 部分上游（如 GLM 非流式接口）返回合法 JSON body 却贴 Content-Type:
+// text/plain 标签。该头经 WriteFilteredHeaders 预写进 gin 响应头后，
+// bufferChatCompletionsAsAnthropic 里 c.JSON 的 writeContentType 无法覆盖，
+// 客户端 SDK（官方 Anthropic SDK）会因 Content-Type 不做 JSON 解析。
+// 回归：转换后的非流式响应必须强制 application/json。
+func TestForwardAsAnthropic_ForceChatCompletionsNonStreamingUpstreamPlainTextJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}, "x-request-id": []string{"rid_msg_chat_plain"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_plain","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:                  rawChatCompletionsTestConfig(),
+		httpUpstream:         upstream,
+		responseHeaderFilter: responseheaders.CompileHeaderFilter(config.ResponseHeaderConfig{}),
+	}
+
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, forceChatMessagesFallbackAccount(), body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.NotContains(t, rec.Header().Get("Content-Type"), "text/plain")
+	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "content.0.text").String())
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
 }
 
 // Covers the fully-new streaming composition: text block is still open when

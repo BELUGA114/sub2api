@@ -460,6 +460,10 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsNonStreamingResponseF
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	// chatResp 为本地转换的 JSON 响应：上游 Content-Type（可能为 text/plain
+	// 等标签）经 WriteFilteredHeaders 预写后 c.JSON 无法覆盖，显式 Set，避免
+	// 客户端 SDK 因 Content-Type 不做 JSON 解析。
+	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.JSON(http.StatusOK, chatResp)
 	return usage, nil
 }

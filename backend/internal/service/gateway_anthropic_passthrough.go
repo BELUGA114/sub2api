@@ -885,6 +885,14 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	// 2xx 的 body 已校验为 JSON，但上游（如 GLM 非流式）可能贴 text/plain
+	// 标签；该头已预写进响应头，c.Data 的 writeContentType 无法覆盖，需
+	// 显式 Set 修正为 JSON 语义，避免客户端 SDK 因 Content-Type 不做 JSON
+	// 解析。非 2xx 错误体按上游标签原样透传。
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		contentType = jsonContentTypeOrDefault(contentType)
+		c.Writer.Header().Set("Content-Type", contentType)
+	}
 	body = reverseToolNamesIfPresent(c, body)
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil

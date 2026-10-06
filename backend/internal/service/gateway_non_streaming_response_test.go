@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -94,6 +95,37 @@ func TestHandleNonStreamingResponse_ValidJSONUnchanged(t *testing.T) {
 	require.NotNil(t, usage)
 	require.Equal(t, 12, usage.InputTokens)
 	require.Equal(t, 7, usage.OutputTokens)
+	require.JSONEq(t, string(body), rec.Body.String())
+}
+
+// 部分上游（如 GLM 非流式接口）返回合法 JSON body 却贴 Content-Type:
+// text/plain 标签。该头经 WriteFilteredHeaders 预写进 gin 响应头后，
+// c.Data 的 writeContentType 无法覆盖，客户端 SDK（官方 Anthropic SDK）
+// 会因 Content-Type 不做 JSON 解析。回归：最终 Content-Type 必须是
+// application/json。
+func TestHandleNonStreamingResponse_UpstreamPlainTextJSONForcesJSONContentType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"id":"msg_1","type":"message","usage":{"input_tokens":12,"output_tokens":7}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	svc := &GatewayService{
+		cfg:                  &config.Config{},
+		rateLimitService:     &RateLimitService{},
+		responseHeaderFilter: responseheaders.CompileHeaderFilter(config.ResponseHeaderConfig{}),
+	}
+
+	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, "claude-sonnet-4-6", "claude-sonnet-4-6")
+
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	require.JSONEq(t, string(body), rec.Body.String())
 }
 

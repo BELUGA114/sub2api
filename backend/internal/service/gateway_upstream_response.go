@@ -1388,6 +1388,17 @@ func (s *GatewayService) resolveCacheTTLUsageOverrideTarget(ctx context.Context,
 	return "", false
 }
 
+// jsonContentTypeOrDefault 在 ct 已是 JSON 媒体类型时原样返回，否则回退
+// "application/json"。经转换或已校验为 JSON 的响应体不能把上游贴的
+// text/plain 等标签透传给客户端：多数 SDK 依据 Content-Type 决定是否做
+// JSON 解析（如官方 Anthropic SDK 收到 text/plain 会把 body 当字符串返回）。
+func jsonContentTypeOrDefault(ct string) string {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(ct)), "json") {
+		return strings.TrimSpace(ct)
+	}
+	return "application/json"
+}
+
 func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
@@ -1453,12 +1464,14 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
-	contentType := "application/json"
-	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
-		if upstreamType := resp.Header.Get("Content-Type"); upstreamType != "" {
-			contentType = upstreamType
-		}
-	}
+	// 此处 body 已通过 JSON 校验，但上游（如 GLM 非流式接口）可能给 JSON
+	// 响应体贴 Content-Type: text/plain 标签；该头经 WriteFilteredHeaders
+	// 预写进 gin 响应头后，c.Data 的 writeContentType 仅在头不存在时设置、
+	// 无法覆盖。这里显式 Set，保证客户端拿到的 Content-Type 与 JSON body
+	// 语义一致：上游 Content-Type 为 JSON 类型时保留原值，否则回退
+	// application/json。
+	contentType := jsonContentTypeOrDefault(resp.Header.Get("Content-Type"))
+	c.Writer.Header().Set("Content-Type", contentType)
 
 	body = reverseToolNamesIfPresent(c, body)
 

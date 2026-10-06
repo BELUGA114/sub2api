@@ -164,6 +164,12 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
+	// 非流式转换响应必须是 application/json：部分上游（如 GLM）会给 JSON 体
+	// 贴 text/plain 标签，经 WriteFilteredHeaders 预写后，c.JSON 的
+	// writeContentType 仅在头不存在时设置、无法覆盖，客户端 SDK 会因
+	// Content-Type 不做 JSON 解析。显式 Set，与 openai_gateway_messages.go
+	// 既有写法一致。
+	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.JSON(http.StatusOK, anthropicResp)
 
 	return &OpenAIForwardResult{
